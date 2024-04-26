@@ -13,13 +13,13 @@ use actix_web::cookie::Key;
 use actix_web::{cookie, error, web};
 use actix_web::{App, HttpResponse, HttpServer, Responder, Result};
 use askama::Template;
-use security::SecurityContext;
+use security::SecurityToken;
 use tarjama::locale::EnglishVariant;
 use tarjama::locale::Locale;
 use tarjama::Translator;
 
-async fn login_ui(ctx: SecurityContext) -> Result<HttpResponse> {
-    if let SecurityContext::Authenticated { .. } = ctx {
+async fn login_ui(token: SecurityToken) -> Result<HttpResponse> {
+    if let SecurityToken::Authenticated { .. } = token {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -33,12 +33,12 @@ async fn login_ui(ctx: SecurityContext) -> Result<HttpResponse> {
 }
 
 async fn login(
-    ctx: SecurityContext,
+    token: SecurityToken,
     pool: web::Data<database::Pool>,
     session: Session,
     form: web::Form<form::user::LoginFormData>,
 ) -> Result<impl Responder> {
-    if let SecurityContext::Authenticated { .. } = ctx {
+    if let SecurityToken::Authenticated { .. } = token {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -80,8 +80,8 @@ async fn login(
         .finish())
 }
 
-async fn register_ui(ctx: SecurityContext) -> Result<HttpResponse> {
-    if let SecurityContext::Authenticated { .. } = ctx {
+async fn register_ui(token: SecurityToken) -> Result<HttpResponse> {
+    if let SecurityToken::Authenticated { .. } = token {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -95,12 +95,12 @@ async fn register_ui(ctx: SecurityContext) -> Result<HttpResponse> {
 }
 
 async fn register(
-    ctx: SecurityContext,
+    token: SecurityToken,
     pool: web::Data<database::Pool>,
     session: Session,
     form: web::Form<form::user::RegisterFormData>,
 ) -> Result<impl Responder> {
-    if let SecurityContext::Authenticated { .. } = ctx {
+    if let SecurityToken::Authenticated { .. } = token {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -131,8 +131,8 @@ async fn register(
         .finish());
 }
 
-async fn index(ctx: SecurityContext) -> actix_web::Result<impl Responder> {
-    if let SecurityContext::Authenticated { .. } = ctx {
+async fn index(token: SecurityToken) -> actix_web::Result<impl Responder> {
+    if let SecurityToken::Authenticated { .. } = token {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -145,8 +145,8 @@ async fn index(ctx: SecurityContext) -> actix_web::Result<impl Responder> {
     Ok(HttpResponse::Ok().content_type("text/html").body(content))
 }
 
-async fn logout(ctx: SecurityContext, session: Session) -> actix_web::Result<impl Responder> {
-    if let SecurityContext::Authenticated { .. } = ctx {
+async fn logout(token: SecurityToken, session: Session) -> actix_web::Result<impl Responder> {
+    if let SecurityToken::Authenticated { .. } = token {
         session.remove("user_id");
     }
 
@@ -156,18 +156,17 @@ async fn logout(ctx: SecurityContext, session: Session) -> actix_web::Result<imp
 }
 
 async fn profile(
-    ctx: SecurityContext,
+    token: SecurityToken,
     locale: Locale,
     translator: Translator,
 ) -> actix_web::Result<impl Responder> {
-    let user = match ctx {
-        SecurityContext::Authenticated { user } => user,
-        SecurityContext::Anonymous => {
-            return Ok(HttpResponse::SeeOther()
-                .append_header(("Location", "/login"))
-                .finish());
-        }
-    };
+    if !token.is_authenticated() {
+        return Ok(HttpResponse::SeeOther()
+            .append_header(("Location", "/login"))
+            .finish());
+    }
+
+    let user = token.user().unwrap();
 
     let template = template::user::ProfileTemplate {
         user,
