@@ -19,6 +19,7 @@ actix-web-lab = "0.20"
 actix-session = { version = "0.9", features = ["cookie-session"] }
 md5 = "0.7.0"
 bcrypt = "0.15.1"
+tarjama = { git = "https://github.com/azjezz/tarjama", branch = "mb" }
 
 [build-dependencies]
 askama = "0.12"

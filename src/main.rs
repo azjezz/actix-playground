@@ -9,6 +9,7 @@ use actix_web::cookie::Key;
 use actix_web::{cookie, error, middleware, web, HttpRequest};
 use actix_web::{App, HttpResponse, HttpServer, Responder, Result};
 use askama::Template;
+use tarjama::Translator;
 
 async fn login_ui(session: Session) -> Result<HttpResponse> {
     if session.get::<String>("user_id")?.is_some() {
@@ -203,7 +204,9 @@ async fn main() -> std::io::Result<()> {
 
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
-    // Initialize the database pool
+    let translator = Translator::with_catalogue_bag(
+        tarjama::loader::toml::load("/translations").await.expect("couldn't load translations"),
+    );
     let pool = database::initialize_db_pool();
 
     log::info!("starting HTTP server at http://localhost:8080");
@@ -211,6 +214,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone()))
+            .app_data(web::Data::new(translator))
             .wrap(middleware::Logger::default())
             .wrap(
                 SessionMiddleware::builder(CookieSessionStore::default(), Key::from(&[0; 64]))
