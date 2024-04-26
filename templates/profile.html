@@ -21,7 +21,9 @@
                 </p>
                 <!-- Logout Button -->
                 <div class="pt-4">
-                    <a href="/logout" class="px-4 py-2 bg-red-500 hover:bg-red-700 text-white font-semibold rounded-lg">Logout</a>
+                    <a href="/logout" class="px-4 py-2 bg-red-500 hover:bg-red-700 text-white font-semibold rounded-lg">
+                        {{ translator.trans(locale, "messages", "logout", None).unwrap() }}
+                    </a>
                 </div>
             </div>
         </div>

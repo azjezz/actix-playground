@@ -1,18 +1,25 @@
 mod database;
 mod form;
+mod middleware;
+mod security;
 mod template;
+
+use std::path::PathBuf;
 
 use actix_session::config::PersistentSession;
 use actix_session::storage::CookieSessionStore;
 use actix_session::{Session, SessionMiddleware};
 use actix_web::cookie::Key;
-use actix_web::{cookie, error, middleware, web, HttpRequest};
+use actix_web::{cookie, error, web};
 use actix_web::{App, HttpResponse, HttpServer, Responder, Result};
 use askama::Template;
+use security::SecurityContext;
+use tarjama::locale::EnglishVariant;
+use tarjama::locale::Locale;
 use tarjama::Translator;
 
-async fn login_ui(session: Session) -> Result<HttpResponse> {
-    if session.get::<String>("user_id")?.is_some() {
+async fn login_ui(ctx: SecurityContext) -> Result<HttpResponse> {
+    if let SecurityContext::Authenticated { .. } = ctx {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -26,11 +33,12 @@ async fn login_ui(session: Session) -> Result<HttpResponse> {
 }
 
 async fn login(
+    ctx: SecurityContext,
     pool: web::Data<database::Pool>,
     session: Session,
     form: web::Form<form::user::LoginFormData>,
 ) -> Result<impl Responder> {
-    if session.get::<String>("user_id")?.is_some() {
+    if let SecurityContext::Authenticated { .. } = ctx {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -72,8 +80,8 @@ async fn login(
         .finish())
 }
 
-async fn register_ui(session: Session) -> Result<HttpResponse> {
-    if session.get::<String>("user_id")?.is_some() {
+async fn register_ui(ctx: SecurityContext) -> Result<HttpResponse> {
+    if let SecurityContext::Authenticated { .. } = ctx {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -87,11 +95,12 @@ async fn register_ui(session: Session) -> Result<HttpResponse> {
 }
 
 async fn register(
+    ctx: SecurityContext,
     pool: web::Data<database::Pool>,
     session: Session,
     form: web::Form<form::user::RegisterFormData>,
 ) -> Result<impl Responder> {
-    if session.get::<String>("user_id")?.is_some() {
+    if let SecurityContext::Authenticated { .. } = ctx {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -122,8 +131,8 @@ async fn register(
         .finish());
 }
 
-async fn index(session: Session) -> actix_web::Result<impl Responder> {
-    if session.get::<String>("user_id")?.is_some() {
+async fn index(ctx: SecurityContext) -> actix_web::Result<impl Responder> {
+    if let SecurityContext::Authenticated { .. } = ctx {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
@@ -136,8 +145,8 @@ async fn index(session: Session) -> actix_web::Result<impl Responder> {
     Ok(HttpResponse::Ok().content_type("text/html").body(content))
 }
 
-async fn logout(session: Session) -> actix_web::Result<impl Responder> {
-    if session.get::<String>("user_id")?.is_some() {
+async fn logout(ctx: SecurityContext, session: Session) -> actix_web::Result<impl Responder> {
+    if let SecurityContext::Authenticated { .. } = ctx {
         session.remove("user_id");
     }
 
@@ -147,44 +156,25 @@ async fn logout(session: Session) -> actix_web::Result<impl Responder> {
 }
 
 async fn profile(
-    session: Session,
-    pool: web::Data<database::Pool>,
+    ctx: SecurityContext,
+    locale: Locale,
+    translator: Translator,
 ) -> actix_web::Result<impl Responder> {
-    let mut logged_in = false;
-    let user = if let Some(user_id) = session.get::<String>("user_id")? {
-        logged_in = true;
-
-        web::block(move || {
-            let mut conn = pool.get().expect("couldn't get db connection from pool");
-
-            database::action::user::get_user_by_id(&mut conn, &user_id)
-        })
-        .await?
-        .map_err(error::ErrorInternalServerError)?
-    } else {
-        None
-    };
-
-    let content = match user {
-        Some(user) => {
-            let template = template::user::ProfileTemplate { user };
-
-            template.render().map_err(error::ErrorInternalServerError)?
-        }
-        None => {
-            if logged_in {
-                session.remove("user_id");
-
-                return Ok(HttpResponse::SeeOther()
-                    .append_header(("Location", "/login?logout=1"))
-                    .finish());
-            }
-
-            let template = template::error::NotFoundErrorTemplate;
-
-            template.render().map_err(error::ErrorInternalServerError)?
+    let user = match ctx {
+        SecurityContext::Authenticated { user } => user,
+        SecurityContext::Anonymous => {
+            return Ok(HttpResponse::SeeOther()
+                .append_header(("Location", "/login"))
+                .finish());
         }
     };
+
+    let template = template::user::ProfileTemplate {
+        user,
+        translator,
+        locale,
+    };
+    let content = template.render().map_err(error::ErrorInternalServerError)?;
 
     Ok(HttpResponse::Ok().content_type("text/html").body(content))
 }
@@ -204,8 +194,15 @@ async fn main() -> std::io::Result<()> {
 
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
+    // the dir is root_dir + "/translations"
+    //
+    let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    d.push("translations");
+
     let translator = Translator::with_catalogue_bag(
-        tarjama::loader::toml::load("/translations").await.expect("couldn't load translations"),
+        tarjama::loader::toml::load(d)
+            .await
+            .expect("couldn't load translations"),
     );
     let pool = database::initialize_db_pool();
 
@@ -214,8 +211,12 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone()))
-            .app_data(web::Data::new(translator))
-            .wrap(middleware::Logger::default())
+            .app_data(web::Data::new(translator.clone()))
+            .wrap(middleware::user::UserDataMiddleware)
+            .wrap(tarjama::actix::TranslatorMiddleware::new(
+                translator.clone(),
+                Locale::English(EnglishVariant::Default),
+            ))
             .wrap(
                 SessionMiddleware::builder(CookieSessionStore::default(), Key::from(&[0; 64]))
                     .cookie_secure(false)
@@ -224,6 +225,7 @@ async fn main() -> std::io::Result<()> {
                     )
                     .build(),
             )
+            .wrap(actix_web::middleware::Logger::default())
             .default_service(web::route().to(default_handler))
             .route("/", web::get().to(index))
             .service(

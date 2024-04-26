@@ -47,11 +47,3 @@ pub fn get_user_by_email(conn: &mut SqliteConnection, email: &str) -> Result<Opt
 
     Ok(user)
 }
-
-pub fn get_all_users(conn: &mut SqliteConnection) -> Result<Vec<User>> {
-    use crate::database::schema::users::dsl::users;
-
-    let all_users = users.load::<User>(conn)?;
-
-    Ok(all_users)
-}

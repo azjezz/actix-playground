@@ -1,0 +1,2 @@
+greeting = "Bonjour, {name}"
+logout = "Déconnexion"
