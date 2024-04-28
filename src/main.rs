@@ -2,9 +2,8 @@ mod database;
 mod form;
 mod middleware;
 mod security;
-mod template;
-
-use std::path::PathBuf;
+mod templating;
+mod translation;
 
 use actix_session::config::PersistentSession;
 use actix_session::storage::CookieSessionStore;
@@ -12,24 +11,45 @@ use actix_session::{Session, SessionMiddleware};
 use actix_web::cookie::Key;
 use actix_web::{cookie, error, web};
 use actix_web::{App, HttpResponse, HttpServer, Responder, Result};
-use askama::Template;
 use security::SecurityToken;
 use tarjama::locale::EnglishVariant;
 use tarjama::locale::Locale;
-use tarjama::Translator;
+use tera::{Context, Tera};
 
-async fn login_ui(token: SecurityToken) -> Result<HttpResponse> {
+async fn index(
+    tera: web::Data<Tera>,
+    locale: Locale,
+    token: SecurityToken,
+) -> actix_web::Result<impl Responder> {
     if let SecurityToken::Authenticated { .. } = token {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
     }
 
-    let template = template::user::LoginTemplate
-        .render()
-        .map_err(error::ErrorInternalServerError)?;
+    let mut context = Context::new();
+    context.insert("locale", &locale.to_string());
+    let content = tera.render("index.html", &context).unwrap();
 
-    Ok(HttpResponse::Ok().content_type("text/html").body(template))
+    Ok(HttpResponse::Ok().content_type("text/html").body(content))
+}
+
+async fn login_ui(
+    tera: web::Data<Tera>,
+    locale: Locale,
+    token: SecurityToken,
+) -> Result<HttpResponse> {
+    if let SecurityToken::Authenticated { .. } = token {
+        return Ok(HttpResponse::SeeOther()
+            .append_header(("Location", "/profile"))
+            .finish());
+    }
+
+    let mut context = Context::new();
+    context.insert("locale", &locale.to_string());
+    let content = tera.render("login.html", &context).unwrap();
+
+    Ok(HttpResponse::Ok().content_type("text/html").body(content))
 }
 
 async fn login(
@@ -80,18 +100,22 @@ async fn login(
         .finish())
 }
 
-async fn register_ui(token: SecurityToken) -> Result<HttpResponse> {
+async fn register_ui(
+    tera: web::Data<Tera>,
+    locale: Locale,
+    token: SecurityToken,
+) -> Result<HttpResponse> {
     if let SecurityToken::Authenticated { .. } = token {
         return Ok(HttpResponse::SeeOther()
             .append_header(("Location", "/profile"))
             .finish());
     }
 
-    let template = template::user::RegisterTemplate
-        .render()
-        .map_err(error::ErrorInternalServerError)?;
+    let mut context = Context::new();
+    context.insert("locale", &locale.to_string());
+    let content = tera.render("register.html", &context).unwrap();
 
-    Ok(HttpResponse::Ok().content_type("text/html").body(template))
+    Ok(HttpResponse::Ok().content_type("text/html").body(content))
 }
 
 async fn register(
@@ -131,16 +155,23 @@ async fn register(
         .finish());
 }
 
-async fn index(token: SecurityToken) -> actix_web::Result<impl Responder> {
-    if let SecurityToken::Authenticated { .. } = token {
+async fn profile(
+    tera: web::Data<Tera>,
+    locale: Locale,
+    token: SecurityToken,
+) -> actix_web::Result<impl Responder> {
+    if !token.is_authenticated() {
         return Ok(HttpResponse::SeeOther()
-            .append_header(("Location", "/profile"))
+            .append_header(("Location", "/login"))
             .finish());
     }
 
-    let template = template::IndexTemplate;
+    let user = token.user().unwrap();
 
-    let content = template.render().map_err(error::ErrorInternalServerError)?;
+    let mut context = Context::new();
+    context.insert("user", &user);
+    context.insert("locale", &locale.to_string());
+    let content = tera.render("profile.html", &context).unwrap();
 
     Ok(HttpResponse::Ok().content_type("text/html").body(content))
 }
@@ -155,32 +186,8 @@ async fn logout(token: SecurityToken, session: Session) -> actix_web::Result<imp
         .finish());
 }
 
-async fn profile(
-    token: SecurityToken,
-    locale: Locale,
-    translator: Translator,
-) -> actix_web::Result<impl Responder> {
-    if !token.is_authenticated() {
-        return Ok(HttpResponse::SeeOther()
-            .append_header(("Location", "/login"))
-            .finish());
-    }
-
-    let user = token.user().unwrap();
-
-    let template = template::user::ProfileTemplate {
-        user,
-        translator,
-        locale,
-    };
-    let content = template.render().map_err(error::ErrorInternalServerError)?;
-
-    Ok(HttpResponse::Ok().content_type("text/html").body(content))
-}
-
-async fn default_handler() -> Result<HttpResponse> {
-    let template = template::error::NotFoundErrorTemplate;
-    let content = template.render().map_err(error::ErrorInternalServerError)?;
+async fn default_handler(tera: web::Data<Tera>) -> Result<HttpResponse> {
+    let content = tera.render("error/404.html", &Context::new()).unwrap();
 
     Ok(HttpResponse::NotFound()
         .content_type("text/html")
@@ -193,24 +200,21 @@ async fn main() -> std::io::Result<()> {
 
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
-    // the dir is root_dir + "/translations"
-    //
-    let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    d.push("translations");
-
-    let translator = Translator::with_catalogue_bag(
-        tarjama::loader::toml::load(d)
-            .await
-            .expect("couldn't load translations"),
-    );
     let pool = database::initialize_db_pool();
+    let translator = translation::initialize_translator();
+
+    let mut engine = templating::initialize_engine();
+    engine.register_filter(
+        "trans",
+        templating::filter::TranslatorFilter::new(translator.clone()),
+    );
 
     log::info!("starting HTTP server at http://localhost:8080");
 
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone()))
-            .app_data(web::Data::new(translator.clone()))
+            .app_data(web::Data::new(engine.clone()))
             .wrap(middleware::user::UserDataMiddleware)
             .wrap(tarjama::actix::TranslatorMiddleware::new(
                 translator.clone(),

@@ -1,6 +1,6 @@
 use diesel::{deserialize::Queryable, prelude::Insertable};
 use md5;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::database::schema::users;
 
@@ -10,7 +10,7 @@ pub const USER_FLAG_TWO_FACTOR_AUTH: i32 = 4;
 pub const USER_FLAG_EMAIL_VERIFIED: i32 = 8;
 
 /// User details.
-#[derive(Debug, Clone, Serialize, Deserialize, Queryable, Insertable)]
+#[derive(Debug, Clone, Deserialize, Queryable, Insertable)]
 #[diesel(table_name = users)]
 pub struct User {
     pub id: String,
@@ -40,47 +40,27 @@ impl User {
             md5::compute(self.email.trim().to_lowercase().as_bytes())
         )
     }
-
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "id": self.id,
-            "username": self.username,
-            "email": self.email,
-            "flags": self.flags,
-            "admin": self.has_flag(USER_FLAG_ADMIN),
-            "suspended": self.has_flag(USER_FLAG_SUSPENDED),
-            "two_factor_auth": self.has_flag(USER_FLAG_TWO_FACTOR_AUTH),
-            "email_verified": self.has_flag(USER_FLAG_EMAIL_VERIFIED),
-        })
-    }
 }
 
-/// New user details.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewUser {
-    pub username: String,
-    pub email: String,
-    pub password: String,
-    pub secret: Option<String>,
-    pub flags: i32,
-}
+impl Serialize for User {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
 
-impl NewUser {
-    /// Constructs new user details from name.
-    #[cfg(test)] // only needed in tests
-    pub fn new(
-        username: impl Into<String>,
-        email: impl Into<String>,
-        password: impl Into<String>,
-        secret: Option<String>,
-        flags: i32,
-    ) -> Self {
-        Self {
-            username: username.into(),
-            email: email.into(),
-            password: password.into(),
-            secret,
-            flags,
-        }
+        let mut state = serializer.serialize_struct("User", 6)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("username", &self.username)?;
+        state.serialize_field("email", &self.email)?;
+        state.serialize_field("password", &self.password)?;
+        state.serialize_field("secret", &self.secret)?;
+        state.serialize_field("flags", &self.flags)?;
+        state.serialize_field("admin", &self.has_flag(USER_FLAG_ADMIN))?;
+        state.serialize_field("suspended", &self.has_flag(USER_FLAG_SUSPENDED))?;
+        state.serialize_field("two_factor_auth", &self.has_flag(USER_FLAG_TWO_FACTOR_AUTH))?;
+        state.serialize_field("email_verified", &self.has_flag(USER_FLAG_EMAIL_VERIFIED))?;
+        state.serialize_field("avatar_hash", &self.get_gravatar_hash())?;
+        state.end()
     }
 }
